@@ -58,22 +58,21 @@ class httpTransferService : public dumpTransferService{
     std::string remoteEndpoint;
     //no locks on this but im pretty sure its not needed at all
     int epfd =-1;
-    int channelFd =-1;
+    int channelFdArr[2];
     int remoteFd =-1;
     
     static bool pullWorkerUp;
 
     nghttp2_session *session;
 
-    void frameRecvCback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data);
-    int headerRecvCback(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data);
-    int dataChunkRecvCback(nghttp2_session *session, uint8_t flags, int32_t stream_id, const uint8_t *data, size_t len, void *user_data);
-    int endStreamCback(nghttp2_session *session, int32_t stream_id, uint32_t error_code, void *user_data);
-    int outgoingCback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data);
+    static void frameRecvCback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data);
+    static int headerRecvCback(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data);
+    static int dataChunkRecvCback(nghttp2_session *session, uint8_t flags, int32_t stream_id, const uint8_t *data, size_t len, void *user_data);
+    static int endStreamCback(nghttp2_session *session, int32_t stream_id, uint32_t error_code, void *user_data);
+    static int outgoingCback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data);
 
 
 
-    std::function<void(const std::string&)> pullNotifyCallback;
 
     //for managing DATA frames
     struct basicCtx{
@@ -86,8 +85,6 @@ class httpTransferService : public dumpTransferService{
         std::string remoteEndpoint;
     };
 
-    //its for handling in-connection multiplexed stream
-    std::unordered_map<int32_t, basicCtx> blockCtx;
 
     protected:
     void pullWorker() override;

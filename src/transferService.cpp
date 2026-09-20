@@ -3,7 +3,6 @@
 #include <cstring>
 #include <stdexcept>
 #include <unistd.h>
-#include <sys/eventfd.h>
 
 
 #include "transferService.hpp"
@@ -57,11 +56,16 @@ httpTransferService::httpTransferService(std::string remoteEndpoint){
 
     }
 
-    if(this->channelFd < 0){
-        this->channelFd = eventfd(0, 0);
-        
-        event.data.fd = this->channelFd;
-        if(epoll_ctl(this->epfd, EPOLL_CTL_ADD, this->channelFd, &event) < 0){
+    if(this->channelFdArr[0] == 0){
+        this->channelFdArr[0] = -1;
+        this->channelFdArr[1] = -1;
+
+        if(pipe2(this->channelFdArr, O_NONBLOCK) < 0){
+            throw std::runtime_error("pipe2: " + std::string(std::strerror(errno)));
+        }
+
+        event.data.fd = this->channelFdArr[0];
+        if(epoll_ctl(this->epfd, EPOLL_CTL_ADD, this->channelFdArr[0], &event) < 0){
             throw std::runtime_error("epoll_ctl: " + std::string(std::strerror(errno)));
         }
     }
@@ -123,9 +127,9 @@ void httpTransferService::pullWorker(){
         }
 
         // alt path for initing pulls, notified over the channel
-        if(events->data.fd == this->channelFd){
+        if(events->data.fd == this->channelFdArr[0]){
             uint64_t buf;
-            read(this->channelFd, &buf, sizeof(buf));
+            read(this->channelFdArr[0], &buf, sizeof(buf));
             pullNotify* notify = reinterpret_cast<pullNotify*>(buf);
             std::string path = "/perfPull/" + notify->dumpID;
             int Sz = path.length();
@@ -138,13 +142,20 @@ void httpTransferService::pullWorker(){
                 { (uint8_t *)":authority", (uint8_t *)"127.0.0.1",   10, 9,  NGHTTP2_NV_FLAG_NONE }
             };
 
-            int32_t stream_id = nghttp2_submit_request(session, NULL, hdrs, 4, NULL, NULL);
+            basicCtx* bctx = new basicCtx{};
+            int32_t stream_id = nghttp2_submit_request(session, NULL, hdrs, 4, NULL, bctx);
 
             if (stream_id > 0) {
-                //this thing is blocking, outgoing frames ought to be small anyway and the connection is guaranteed to be clear due to IO blocking for the writes, so no prob under load? 
-                streamCtx[stream_id] = basicCtx{};
-                nghttp2_session_send(session);
-
+                //this thing is blocking, outgoing frames ought to be small anyway and the connection is guaranteed to be clear due to IO blocking for the writes on this end? No prob under load?
+                const uint8_t *out;
+                while(nghttp2_session_want_write(session)){
+                    //this can technically block forever but i dont seriously expect it to actually happen
+                    //will add some sort of debounce and yield to epoll
+                    auto wrLen = nghttp2_session_mem_send(session, &out);
+                    write(this->remoteFd, out, wrLen);
+                }
+                continue;
+                
             }
 
             //its all heap allocated
@@ -157,6 +168,7 @@ void httpTransferService::pullWorker(){
             // For now, just print the file descriptor that is ready
             int bytesRead = read(events[i].data.fd, staticBuffer, sizeof(staticBuffer));
             if(bytesRead < 0){
+                //dont plan on moving to edge triggered, will just keep it like that
                 throw std::runtime_error("read: " + std::string(std::strerror(errno)));
             }
 
@@ -193,10 +205,11 @@ int httpTransferService::headerRecvCback(nghttp2_session *session,
         return -1;
     }
 
-    //do data chunks carry headers?
-    auto ctxMap = static_cast<std::unordered_map<int32_t, httpTransferService::basicCtx>*>(user_data);
-    if(ctxMap->find(frame->hd.stream_id) == ctxMap->end()){
-        httpTransferService::basicCtx bctx;
+    auto temp = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+    basicCtx* bctx = static_cast<basicCtx*>(temp);
+    
+    //pretty sure it wont ever trigger, how bad can it be to have a check
+    if(bctx != nullptr){
         if(headerName == ":path"){
             tempRoot += std::string(headerValue);
         }
@@ -206,9 +219,9 @@ int httpTransferService::headerRecvCback(nghttp2_session *session,
             throw std::runtime_error("open failed in nghttp2 header callback: " + std::string(std::strerror(errno)));
         }
 
-        bctx.openFd = resOp;
-        ctxMap->emplace(frame->hd.stream_id, bctx);
+        bctx->openFd = resOp;
     }
+    
 
     return 0;
 }
@@ -222,8 +235,13 @@ int httpTransferService::dataChunkRecvCback(nghttp2_session *session, uint8_t fl
 
     auto ctxMap = static_cast<std::unordered_map<int32_t, httpTransferService::basicCtx>*>(user_data);
 
+    //theese neanderthals saw fit to give me a stream ID but no pointer to my actual struct inside tha callback signatures for god knows what reason
+    //apperently you just HAVE to call this thing to get your stuff and then cast it
+    auto temp = nghttp2_session_get_stream_user_data(session, stream_id);
+    basicCtx* bctx = static_cast<basicCtx*>(temp);
+
     httpTransferService::basicCtx &bctx = (*ctxMap)[stream_id];
-    ssize_t written = write(bctx.openFd, data, len);
+    ssize_t written = write(bctx->openFd, data, len);
     if(written < 0){
         throw std::runtime_error("write failed in data chunk callback: " + std::string(std::strerror(errno)));
     }
@@ -232,33 +250,19 @@ int httpTransferService::dataChunkRecvCback(nghttp2_session *session, uint8_t fl
 }
 
 int httpTransferService::endStreamCback(nghttp2_session *session, int32_t stream_id, uint32_t error_code, void *user_data){
-    auto ctxMap = static_cast<std::unordered_map<int32_t, httpTransferService::basicCtx>*>(user_data);
+    auto tmp = nghttp2_session_get_stream_user_data(session, stream_id);
+    httpTransferService::basicCtx* bctx = static_cast<httpTransferService::basicCtx*>(tmp);
 
-    auto it = ctxMap->find(stream_id);
-    if(it == ctxMap->end()){
-        return -1;
-    }
+    fsync(bctx->openFd);
+    close(bctx->openFd);
 
-    fsync(it->second.openFd);
-    close(it->second.openFd);
+    filePresence.add(bctx->id, dumpFile(bctx->id, ""));
 
-    filePresence.add(it->second.id, dumpFile(it->second.id, ""));
-
-    ctxMap->erase(it);
+    delete bctx;
     return 0;
 }
 
 
-int httpTransferService::outgoingCback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data){
-    
-    int resp = write(this->remoteFd, data, length);
-    if(resp == EAGAIN){
-        // should just add the event with EPOLLOUT
-    }
-
-    
-    return 0;
-}
 
 
 void httpTransferService::performPull(std::string dumpId){
@@ -272,7 +276,7 @@ void httpTransferService::performPull(std::string dumpId){
     notify->dumpID = dumpId;
     notify->remoteEndpoint = this->remoteEndpoint;
 
-    write(channelFd, notify, sizeof(pullNotify));
+    write(channelFdArr[1], notify, sizeof(pullNotify));
     //there is basically 0 state reporting, given this ought to be driven by an operatorSDK binary i think ill just write some emitter system to dump out state in etcd but for now idk
 
     return;
@@ -287,7 +291,8 @@ bool httpTransferService::shouldOpen(std::string remoteAddr){
 }
 
 void httpTransferService::preInitialize(){
-    this->channelFd = -1;
+    this->channelFdArr[0] = -1;
+    this->channelFdArr[1] = -1;
     this->epfd = -1;
 }
 
