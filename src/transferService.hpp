@@ -69,7 +69,6 @@ class httpTransferService : public dumpTransferService{
     static int headerRecvCback(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data);
     static int dataChunkRecvCback(nghttp2_session *session, uint8_t flags, int32_t stream_id, const uint8_t *data, size_t len, void *user_data);
     static int endStreamCback(nghttp2_session *session, int32_t stream_id, uint32_t error_code, void *user_data);
-    static int outgoingCback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data);
 
 
 
