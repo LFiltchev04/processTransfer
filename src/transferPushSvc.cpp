@@ -45,6 +45,16 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
     if(headerName == ":path"){
         if(presenceTable->has(headerValue.data())) {
             ev.events = EPOLLOUT;
+
+            basicCtx* ctx = new basicCtx();
+            //have to add the base path
+
+            if(nghttp2_session_get_stream_user_data(session, frame->hd.stream_id) == nullptr){
+                nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, ctx);
+            }
+
+            ctx->dumpFd = open(headerValue.data(), O_RDONLY);
+            
         }
     }
 
