@@ -1,0 +1,8 @@
+build/*
+criu/*
+CMakeFiles/*
+Makefile
+src/extImport/*
+src/nvmeoftcp/*
+compile_commands.json
+binaries
