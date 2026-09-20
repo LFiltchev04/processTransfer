@@ -142,6 +142,7 @@ void httpTransferService::pullWorker(){
                 { (uint8_t *)":authority", (uint8_t *)"127.0.0.1",   10, 9,  NGHTTP2_NV_FLAG_NONE }
             };
 
+            //no need for the set function?
             basicCtx* bctx = new basicCtx{};
             int32_t stream_id = nghttp2_submit_request(session, NULL, hdrs, 4, NULL, bctx);
 

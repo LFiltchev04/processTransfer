@@ -241,7 +241,7 @@ class waiterHeap{
         
             }
 
-            //handle block until a new item enters here
+            //have to add the maintenance regular routines here on some fixed time period
         }
     }
 
@@ -299,7 +299,7 @@ class waiterHeap{
 
     void insertTimer(timerEntry entry){
 
-        //this is ultra janky but it was somehow the cleanest solution, the call to stop is called here to ensure that the worker thread releases its own lock on the heap mutex
+        //this is ultra janky but it was somehow the cleanest solution, the call to stop is made here to ensure that the worker thread releases its own lock on the heap mutex
         //it is very ugly but its the only way to avoid consitiency problems or a rewirite
         this->activeWriterFlag = true;
         this->worker.request_stop();
@@ -331,7 +331,7 @@ class waiterHeap{
 
         heapStateEmpty = false;
 
-        //assumed single threaded so it should keep the prior state and re-check the first element
+        //this just makes sure that the waiter ran to set the timer to a new earliest tirgger time had it been the case
         this->worker.request_stop();
     }
 
