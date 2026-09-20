@@ -6,3 +6,4 @@ src/extImport/*
 src/nvmeoftcp/*
 compile_commands.json
 binaries
+criu
