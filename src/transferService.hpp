@@ -77,7 +77,9 @@ class httpTransferService : public dumpTransferService{
     struct basicCtx{
         int openFd;
         std::string id;
+        nghttp2_data_source src;
     };
+
     //for initiating a pull from a remote
     struct pullNotify{
         std::string dumpID;

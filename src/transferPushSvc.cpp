@@ -16,7 +16,10 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
 
     nghttp2_session_callbacks* callbacks;
     nghttp2_session_callbacks_new(&callbacks);
+    nghttp2_session_callbacks_set_on_header_callback(callbacks, http2PushService::onHeaderRecv);
 
+    nghttp2_data_provider dataProvider;
+    dataProvider.read_callback = http2PushService::dataSrcRead;
     nghttp2_session_server_new(&session, callbacks, nullptr);
     
     this->ev.events = EPOLLIN;
