@@ -3,10 +3,12 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <nghttp2/nghttp2.h>
+#include <dirent.h>
+#include <unordered_map>
 
 #include "dumpPresenceTable.hpp"
 
-
+#define THIRTYTWO_KB (32 * 1024)
 class pushService {
 
     protected:
@@ -45,6 +47,7 @@ class http2PushService: public pushService {
     static int epfd;
     static epoll_event ev;
 
+
     //basic repeating headers i dont want to allocate often
     nvRow scheme{":scheme", "http"};
     nvRow authority{":authority", "127.0.0.1"};
@@ -58,10 +61,14 @@ class http2PushService: public pushService {
     nghttp2_session* session;
 
     struct basicCtx{
-        int dumpFd;
+        DIR *openDir;
         int outgoingFd;
         nghttp2_data_provider src;
     };
+    struct partialWritesCtx{
+        unsigned int lastWriteEnd  =0u; //can be swapped out for a multiplied window size but meh
+    };
+    std::unordered_map<char[], partialWritesCtx> partialWritesMap;
 
     
 

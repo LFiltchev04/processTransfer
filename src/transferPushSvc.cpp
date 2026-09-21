@@ -1,5 +1,7 @@
 #include "transferPushSvc.hpp"
 
+#include <cstring>
+
 http2PushService::http2PushService(dumpPresenceTable* table, int port): pushService(table) {
     epfd = epoll_create1(0);
     serverSocket = socket(AF_INET, SOCK_STREAM, 0);
@@ -71,8 +73,8 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
                 nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, ctx);
             }
 
-            ctx->dumpFd = open(headerValue.data(), O_RDONLY);
-            ctx->src.source.fd = ctx->dumpFd;
+            ctx->openDir = opendir(headerValue.data());
+            
 
             //this basically locks the class into it being a singleton per process
             //that wont be that big a deal, given that i could effectivley move the slow parts to asynchronous io_uring calls
@@ -97,10 +99,28 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
 ssize_t http2PushService::dataSrcRead(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data) {
     basicCtx* ctx = reinterpret_cast<basicCtx*>(source->ptr);
 
-    
-    ssize_t readBytes = read(ctx->dumpFd, buf, length);
-    if(readBytes == 0) {
-        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+    //if this thing does not overflow at least a dozen times and waste me at least a week of time to chase
+    //down later i wont be pleased
+    dirent* dentry = readdir(ctx->openDir);
+    int deferCount = 0;
+    while(dentry != nullptr) {
+        //assuming its all a flat structure with nothing weird, no nested dirs no nothing
+        const size_t nameLength = strnlen(dentry->d_name, sizeof(dentry->d_name));
+        std::string uniqFilePull(reinterpret_cast<const char*>(&stream_id), sizeof(stream_id));
+        uniqFilePull.append(dentry->d_name, nameLength);
+        //kind of a rough saftey margin
+        if(dentry->d_reclen > length-64){
+            
+        }else{
+
+        }
+
+        dentry = readdir(ctx->openDir);
+        deferCount++;
+        if(deferCount > 50){
+            return NGHTTP2_ERR_DEFERRED;
+        }
     }
-    return readBytes;
-}
+
+    //reads directory
+    return 0;}
