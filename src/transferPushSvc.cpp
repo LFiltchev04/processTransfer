@@ -47,6 +47,12 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
     if(headerName == ":status" and headerValue != "200") {
         //closes stream, keeps tcp open
         nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE, frame->hd.stream_id, NGHTTP2_INTERNAL_ERROR);
+        //have to remember to clear theese
+        if(ev.events != EPOLLIN | EPOLLOUT){
+            ev.events = EPOLLIN | EPOLLOUT;
+            epoll_ctl(epfd, EPOLL_CTL_MOD, serverSocket, &ev);
+        }
+            
         return 0;
     }
 
@@ -84,4 +90,17 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
 
 
     return 0;
+}
+
+
+
+ssize_t http2PushService::dataSrcRead(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data) {
+    basicCtx* ctx = reinterpret_cast<basicCtx*>(source->ptr);
+
+    
+    ssize_t readBytes = read(ctx->dumpFd, buf, length);
+    if(readBytes == 0) {
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+    }
+    return readBytes;
 }
