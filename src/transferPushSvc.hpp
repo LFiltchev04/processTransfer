@@ -19,23 +19,52 @@ class pushService {
     
 };
 
+//should have used that from the start
+#define MAKE_NV(NAME, VALUE) \
+    { (uint8_t *)(NAME), (uint8_t *)(VALUE), sizeof(NAME) - 1, sizeof(VALUE) - 1, NGHTTP2_NV_FLAG_NONE }
+
+
+struct nvRow {
+    const char* name;
+    const char* value;
+};
+//have to call delete right after?
+nghttp2_nv* makeNvHelper(nvRow rows[]) {
+    int arrSz = sizeof(rows) / sizeof(nvRow);
+    nghttp2_nv* nvArr = new nghttp2_nv[arrSz];
+    for(int i = 0; i < arrSz; ++i) {
+        nvArr[i] = MAKE_NV(rows[i].name, rows[i].value);
+    }
+
+    return nvArr;
+}
 
 
 class http2PushService: public pushService {
-    int serverSocket;
-    int epfd;
+    static int serverSocket;
+    static int epfd;
     static epoll_event ev;
+
+    //basic repeating headers i dont want to allocate often
+    nvRow scheme{":scheme", "http"};
+    nvRow authority{":authority", "127.0.0.1"};
+    nvRow method{":method", "GET"};
+    nvRow type{":type", "application/octet-stream"};
+
+    nvRow returnCodeOk{":status", "200"};
+    nvRow returnCodeNotFnd{":status", "404"};
+    
 
     nghttp2_session* session;
 
     struct basicCtx{
         int dumpFd;
         int outgoingFd;
+        nghttp2_data_provider src;
     };
 
     static int onHeaderRecv(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data);
     static ssize_t dataSrcRead(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data);
-
 
     public:
     http2PushService(dumpPresenceTable* table, int port);

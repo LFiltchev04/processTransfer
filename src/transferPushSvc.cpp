@@ -41,14 +41,23 @@ void http2PushService::listenL() {
 
 int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data) {
     
-
     std::string_view headerName(reinterpret_cast<const char*>(name), name_len);
     std::string_view headerValue(reinterpret_cast<const char*>(value), value_len);
 
+    if(headerName == ":status" and headerValue != "200") {
+        //closes stream, keeps tcp open
+        nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE, frame->hd.stream_id, NGHTTP2_INTERNAL_ERROR);
+        return 0;
+    }
+
+
+
     if(headerName == ":path"){
         if(presenceTable->has(headerValue.data())) {
+            //is this too wasteful?
             ev.events = EPOLLOUT;
 
+            //just sets up the data provider
             basicCtx* ctx = new basicCtx();
             //have to add the base path
 
@@ -57,9 +66,21 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
             }
 
             ctx->dumpFd = open(headerValue.data(), O_RDONLY);
+            ctx->src.source.fd = ctx->dumpFd;
+
+            //this basically locks the class into it being a singleton per process
+            //that wont be that big a deal, given that i could effectivley move the slow parts to asynchronous io_uring calls
+            epoll_ctl(epfd, EPOLL_CTL_MOD, serverSocket, &ev);
+            //if i got here it must mean its safe to write, just mem send?
+
+            nvRow path{":path", headerValue.data()};
             
+            nghttp2_nv* nvArr = makeNvHelper(new nvRow[1]{{":path", headerValue.data()}});
+            nghttp2_submit_request(session, nullptr, nvArr, sizeof(nvArr)/sizeof(nghttp2_nv), &ctx->src, &ctx);
+            delete[] nvArr;
         }
     }
+
 
 
     return 0;
