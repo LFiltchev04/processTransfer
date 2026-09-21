@@ -108,8 +108,9 @@ ssize_t http2PushService::dataSrcRead(nghttp2_session *session, int32_t stream_i
         const size_t nameLength = strnlen(dentry->d_name, sizeof(dentry->d_name));
         std::string uniqFilePull(reinterpret_cast<const char*>(&stream_id), sizeof(stream_id));
         uniqFilePull.append(dentry->d_name, nameLength);
-        //kind of a rough saftey margin
+        //kind of a rough saftey margin, this wil most definitley overfow
         if(dentry->d_reclen > length-64){
+            int tmpfd = open(dentry->d_name, O_RDONLY);
             
         }else{
 

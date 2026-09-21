@@ -5,6 +5,7 @@
 #include <nghttp2/nghttp2.h>
 #include <dirent.h>
 #include <unordered_map>
+#include <string>
 
 #include "dumpPresenceTable.hpp"
 
@@ -66,9 +67,10 @@ class http2PushService: public pushService {
         nghttp2_data_provider src;
     };
     struct partialWritesCtx{
-        unsigned int lastWriteEnd  =0u; //can be swapped out for a multiplied window size but meh
+        unsigned int lastWriteEnd; //can be swapped out for a multiplied window size but meh
+        partialWritesCtx(){lastWriteEnd = 0u;}
     };
-    std::unordered_map<char[], partialWritesCtx> partialWritesMap;
+    std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
 
     
 
