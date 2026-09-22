@@ -14,6 +14,46 @@
 #include "dataPack.hpp"
 
 #define THIRTYTWO_KB (32 * 1024)
+
+
+
+
+
+class pipePool{
+    int fdPool[64][2];
+    std::stack<int*> pool;
+
+    public:
+    pipePool(){
+        for(int i = 0; i < 64; ++i){
+            pipe(fdPool[i]);
+            pool.push(fdPool[i]);
+        }
+    }
+
+
+
+    int* getPipe(){
+        if(pool.empty()){
+            return nullptr;
+        }
+     
+        int* pipeFds = pool.top();
+        pool.pop();
+        return pipeFds;
+    }
+
+    void returnPipe(int* pipeFds){
+        pool.push(pipeFds);
+    }
+};
+
+
+
+
+
+
+
 class pushService {
 
     protected:
@@ -52,6 +92,9 @@ class http2PushService: public pushService {
     static int epfd;
     static epoll_event ev;
 
+    static pipePool pipeMgr;
+
+
 
     //basic repeating headers i dont want to allocate often
     nvRow scheme{":scheme", "http"};
@@ -69,18 +112,24 @@ class http2PushService: public pushService {
     static io_uring ring;
 
 
+
+    struct sqPair{
+        io_uring_sqe readSqe;
+        io_uring_sqe writeSqe;
+    };
     struct basicCtx{
         DIR *openDir;
         dirent* activeDentry = nullptr;
         int outgoingFd;
         nghttp2_data_provider src;
-        std::vector<io_uring_sqe*> sqVec;
+        std::vector<sqPair*> sqVec;
     };
     struct partialWritesCtx{
         int openFd;
         unsigned int lastWriteEnd; //can be swapped out for a multiplied window size but meh
         partialWritesCtx(){lastWriteEnd = 0u; openFd = -1; }
     };
+
     static std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
 
     int getRadomStream();

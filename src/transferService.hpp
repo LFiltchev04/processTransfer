@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <thread>
 #include <functional>
+#include <stack>
 
 #include "dumpFile.hpp"
 
@@ -17,6 +18,7 @@ struct connInfo{
 
 
 //exists to make sure the static entries are initialized at all times
+
 
 
 
@@ -62,8 +64,8 @@ class httpTransferService : public dumpTransferService{
     int remoteFd =-1;
     
     static bool pullWorkerUp;
-
     nghttp2_session *session;
+
 
     static void frameRecvCback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data);
     static int headerRecvCback(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data);

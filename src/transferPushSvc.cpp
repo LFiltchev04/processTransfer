@@ -263,9 +263,15 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
             if(wrtCtxRef != nullptr) {
                 wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
             
-                io_uring_sqe* sqe = io_uring_get_sqe(&ring);
-                io_uring_prep_splice(sqe, wrtCtxRef->openFd, 0, ctx->outgoingFd, 0, length, 0);
-                ctx->sqVec.push_back(sqe);
+                int* pipeFds = pipeMgr.getPipe();
+                io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
+                io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, 0, pipeFds[1], 0, length, 0);
+                
+                io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, 0, length, 0);
+                
+                
+                ctx->sqVec.push_back(sqePipeRead);
 
             
             }
