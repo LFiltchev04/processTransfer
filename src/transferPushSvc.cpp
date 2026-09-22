@@ -29,6 +29,9 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
     epoll_ctl(epfd, EPOLL_CTL_ADD, serverSocket, &this->ev);
 }
 
+
+
+
 void http2PushService::listenL() {
     int sixtnKB = 16 * 1024;
     uint8_t staticBuffer[sixtnKB];
@@ -65,6 +68,10 @@ void http2PushService::listenL() {
     }
 }
 
+
+
+
+
 int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data) {
     
     std::string_view headerName(reinterpret_cast<const char*>(name), name_len);
@@ -73,11 +80,6 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
     if(headerName == ":status" and headerValue != "200") {
         //closes stream, keeps tcp open
         nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE, frame->hd.stream_id, NGHTTP2_INTERNAL_ERROR);
-        //have to remember to clear theese
-        if(ev.events != EPOLLIN | EPOLLOUT){
-            ev.events = EPOLLIN | EPOLLOUT;
-            epoll_ctl(epfd, EPOLL_CTL_MOD, serverSocket, &ev);
-        }
             
         return 0;
     }
@@ -86,8 +88,6 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
 
     if(headerName == ":path"){
         if(presenceTable->has(headerValue.data())) {
-            //is this too wasteful?
-            ev.events = EPOLLOUT;
 
             //just sets up the data provider
             basicCtx* ctx = new basicCtx();
@@ -105,11 +105,11 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
             epoll_ctl(epfd, EPOLL_CTL_MOD, serverSocket, &ev);
             //if i got here it must mean its safe to write, just mem send?
 
-            nvRow path{":path", headerValue.data()};
-            
-            nghttp2_nv* nvArr = makeNvHelper(new nvRow[1]{{":path", headerValue.data()}});
-            nghttp2_submit_request(session, nullptr, nvArr, sizeof(nvArr)/sizeof(nghttp2_nv), &ctx->src, &ctx);
-            delete[] nvArr;
+            nghttp2_nv pathHeader[1];
+            //apperently theese need flags set to not dangle after this goes out of scope
+
+            nghttp2_submit_request(session, nullptr, pathHeader, 1, &ctx->src, ctx);
+            allowNetworkFlush();
         }
     }
 
@@ -223,4 +223,62 @@ ssize_t http2PushService::dataSrcRead(nghttp2_session *session, int32_t stream_i
     
     }
 
+    allowNetworkFlush();
+
+    return NGHTTP2_RST_STREAM;
+
 }
+
+
+
+
+
+
+
+//this thing apperently can just hand me a header that i send from user space and then set up a zero copy io_uring submittion with strict ordering, should yield the event loop fast
+//as well as solving the DEFERRED and reader writer split nonsense in the epoll_wait loop, its not like the other thing where i have to track copmletions or anything so a fire-and-forget approach works
+ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data) {
+    auto tmp = nghttp2_session_get_stream_user_data(session, stream_id);
+    basicCtx* ctx = static_cast<basicCtx*>(tmp);
+
+    *data_flags |= NGHTTP2_DATA_FLAG_NO_COPY;
+
+    
+    dirent* dentry = ctx->activeDentry;
+        if(ctx->activeDentry == nullptr){   
+            dentry = readdir(ctx->openDir);
+            ctx->activeDentry = dentry;
+        }
+
+
+
+    while(dentry != nullptr){
+        //write path for oversized files
+        if(dentry->d_reclen > length-64){
+
+
+
+
+
+
+        }
+    }
+    source->fd = ctx->outgoingFd;
+
+}
+
+
+void http2PushService::allowNetworkFlush() {
+    if(ev.events & (EPOLLIN | EPOLLOUT)){
+        ev.events = EPOLLIN | EPOLLOUT;
+        epoll_ctl(epfd, EPOLL_CTL_MOD, serverSocket, &ev);
+    }
+}
+
+int http2PushService::getRadomStream() {
+    int randPos = rand() % 100; 
+}
+
+
+
+std

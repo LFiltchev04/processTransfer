@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <unordered_map>
 #include <string>
+#include <liburing.h>
 
 #include "dumpPresenceTable.hpp"
 #include "uploadsStaticBuffer.hpp"
@@ -63,6 +64,10 @@ class http2PushService: public pushService {
 
     nghttp2_session* session;
 
+
+    static io_uring ring;
+
+
     struct basicCtx{
         DIR *openDir;
         dirent* activeDentry = nullptr;
@@ -76,11 +81,19 @@ class http2PushService: public pushService {
     };
     static std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
 
-    
+    int getRadomStream();
+    //sets epoll to run on return, need to allocate memory out of scope or it will dangle
+    static void allowNetworkFlush();
+    static void stopNetworkFlush();
 
     static int onHeaderRecv(nghttp2_session *session, const nghttp2_frame *frame, const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, uint8_t flags, void *user_data);
     //this would have been great as a coroutine but i dont want to mess with the boilerplate, its way easier to just pause uploads and resume randomly
     static ssize_t dataSrcRead(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data);
+    static ssize_t dataSrcReadZcp(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data);
+
+    std::string getPrtlRefKey(const std::string& uniqFilePull);
+    partialWritesCtx getPwriteCtx(const std::string& uniqFilePull);
+
 
     public:
     http2PushService(dumpPresenceTable* table, int port);
