@@ -49,6 +49,12 @@ void http2PushService::listenL() {
     while (true){
         int nfds = epoll_wait(epfd, &ev, 1, -1);
 
+
+
+        if(ev.data.fd == ring.ring_fd){
+            cqeHandler(reinterpret_cast<io_uring_cqe*>(ev.data.ptr));
+        }
+
         if(activeFds.find(ev.data.fd) == activeFds.end()) {
             nghttp2_session_callbacks* callbacks;
             nghttp2_session_callbacks_new(&callbacks);
@@ -79,6 +85,10 @@ void http2PushService::listenL() {
 
         if(ev.events & (EPOLLHUP | EPOLLERR)) {
             close(ev.data.fd);
+            tcpCtx* ctx = &activeFds[ev.data.fd]; 
+            nghttp2_session_del(ctx->session);
+            delete ctx;
+
             activeFds.erase(ev.data.fd);
             continue;
         }
@@ -276,7 +286,7 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
 
 
     
-
+        return 0;
 }
 
 
@@ -297,6 +307,7 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
 
             std::string refKey = getPrtlRefKey(dentry->d_name, stream_id);
             partialWritesCtx *wrtCtxRef = getPwriteCtx(refKey);
+            wrtCtxRef->refkey = refKey;
 
             if(wrtCtxRef != nullptr) {
 
@@ -304,12 +315,28 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
                     wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
             
                     int* pipeFds = pipeMgr.getPipe();
+
                     io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
+                    sqePipeRead->flags = IOSQE_IO_LINK;
+                    sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
                     io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, length, SPLICE_F_MORE);
                 
                     io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                    sqePipeWrite->flags = IOSQE_IO_LINK;
                     io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, length, SPLICE_F_MORE);
+
+                    wrtCtxRef->pipes.push_back({pipeFds[0], pipeFds[1]});
                 
+                    if(x < SIXTYFOUR_KB){
+                        //since the chaining model interface is so stupid you have to not set a chain flag for the last one otherwise it will pull in the next unrelated sqe of another operation in here
+                        //absolute neanderthals
+                        int* pipeFds = pipeMgr.getPipe();
+                        io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
+                        io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, length, 0);
+                
+                        io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                        io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, length, 0);
+                    }
 
                 }
             }
@@ -318,7 +345,7 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
 
 
 
-
+    return 0;
 }
 
 
@@ -352,4 +379,25 @@ http2PushService::partialWritesCtx *http2PushService::getPwriteCtx(const std::st
         return &(it->second);
     }
     return nullptr;
+}
+
+
+void http2PushService::cqeHandler(io_uring_cqe* cqe) {
+    partialWritesCtx* wrtCtxRef = reinterpret_cast<partialWritesCtx*>(cqe->user_data);
+    // there is an ordering guarantee, the first completion entry should be that of the first submission entry so i should aways
+    //remote the first element of the vector, should align but if i change the thing its good to know it can wipe the pipes of active writers
+    
+    
+    if(!wrtCtxRef->pipes.empty()) {
+        int* pipeFds = wrtCtxRef->pipes.front();
+        wrtCtxRef->pipes.erase(wrtCtxRef->pipes.begin());
+        pipeMgr.returnPipe(pipeFds);
+
+        if(wrtCtxRef->pipes.empty()) {
+            close(wrtCtxRef->openFd);
+            partialWritesMap.erase(wrtCtxRef->refkey);
+        }
+    }
+
+    wrtCtxRef->pipes.shrink_to_fit();
 }

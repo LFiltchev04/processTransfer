@@ -110,9 +110,7 @@ class http2PushService: public pushService {
 
     nghttp2_session* session;
 
-
     static io_uring ring;
-
 
 
     struct tcpCtx{
@@ -126,7 +124,9 @@ class http2PushService: public pushService {
         nghttp2_data_provider src;
     };
     struct partialWritesCtx{
+        std::vector<int[2]> pipes;
         int openFd;
+        std::string refkey;
         unsigned int lastWriteEnd; //can be swapped out for a multiplied window size but meh
         partialWritesCtx(){lastWriteEnd = 0u; openFd = -1; }
     };
@@ -149,6 +149,7 @@ class http2PushService: public pushService {
     static std::string getPrtlRefKey(const std::string& uniqFilePull, ssize_t streamID);
     static partialWritesCtx *getPwriteCtx(const std::string& uniqFilePull);
 
+    static void cqeHandler(io_uring_cqe* cqe);
 
     public:
     http2PushService(dumpPresenceTable* table, int port);
