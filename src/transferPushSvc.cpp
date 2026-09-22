@@ -44,6 +44,7 @@ void http2PushService::listenL() {
     std::unordered_map<int, tcpCtx> activeFds;
 
     int sixtnKB = 16 * 1024;
+    //its a little big for header manipulation
     uint8_t staticBuffer[sixtnKB];
     while (true){
         int nfds = epoll_wait(epfd, &ev, 1, -1);
@@ -52,16 +53,29 @@ void http2PushService::listenL() {
             nghttp2_session_callbacks* callbacks;
             nghttp2_session_callbacks_new(&callbacks);
             nghttp2_session_callbacks_set_on_header_callback(callbacks, http2PushService::onHeaderRecv);
-
+            nghttp2_session_callbacks_set_send_data_callback(callbacks, http2PushService::dataWrite);
 
             tcpCtx ctx;
             ctx.outgoingFd = ev.data.fd;
-            activeFds.insert({ev.data.fd, ctx});
             
-            auto uData = static_cast<void*>(&activeFds[ev.data.fd]);
-            nghttp2_session_server_new(&session, callbacks, uData);
+            activeFds.insert({ev.data.fd, ctx});
+            auto safePointer = &activeFds[ev.data.fd];
+            safePointer->outgoingFd = ev.data.fd;
+            nghttp2_session_server_new(&safePointer->session, callbacks, safePointer);
+            //will just repeat, next connection will loop back to mem_recv to get drained
+            //if i change trigger mechanism i need to change it to explicitly drain
 
+        }else{
+            if(ev.events & EPOLLIN){
+            //straight dump into async writers, should do exclusivley metadata operations, nothing too blocking
+            for(int i = 0; i < nfds; ++i) {
+                nghttp2_session_mem_recv(activeFds[ev.data.fd].session, staticBuffer, sixtnKB);
+            }
         }
+        }
+
+
+
 
         if(ev.events & (EPOLLHUP | EPOLLERR)) {
             close(ev.data.fd);
@@ -70,12 +84,7 @@ void http2PushService::listenL() {
         }
 
 
-        if(ev.events & EPOLLIN){
-            //straight dump into async writers, should do exclusivley metadata operations, nothing too blocking
-            for(int i = 0; i < nfds; ++i) {
-                nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
-            }
-        }
+        
         
 
     }
@@ -274,7 +283,7 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
 
 
 
-ssize_t http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data) {
+int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data) {
     
     int32_t stream_id = frame->hd.stream_id;
     auto tmp = nghttp2_session_get_stream_user_data(session, stream_id);

@@ -117,6 +117,7 @@ class http2PushService: public pushService {
 
     struct tcpCtx{
         int outgoingFd;
+        nghttp2_session* session;
     }; 
     struct basicCtx{
         DIR *openDir;
@@ -143,7 +144,7 @@ class http2PushService: public pushService {
     static ssize_t dataSrcReadZcp(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data);
 
     //callback is used only for zero-copy writes
-    static ssize_t dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data);
+    static int dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data);
 
     static std::string getPrtlRefKey(const std::string& uniqFilePull, ssize_t streamID);
     static partialWritesCtx *getPwriteCtx(const std::string& uniqFilePull);
