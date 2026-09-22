@@ -8,6 +8,8 @@
 #include <string>
 
 #include "dumpPresenceTable.hpp"
+#include "uploadsStaticBuffer.hpp"
+#include "dataPack.hpp"
 
 #define THIRTYTWO_KB (32 * 1024)
 class pushService {
@@ -63,14 +65,16 @@ class http2PushService: public pushService {
 
     struct basicCtx{
         DIR *openDir;
+        dirent* activeDentry = nullptr;
         int outgoingFd;
         nghttp2_data_provider src;
     };
     struct partialWritesCtx{
+        int openFd;
         unsigned int lastWriteEnd; //can be swapped out for a multiplied window size but meh
-        partialWritesCtx(){lastWriteEnd = 0u;}
+        partialWritesCtx(){lastWriteEnd = 0u; openFd = -1; }
     };
-    std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
+    static std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
 
     
 
