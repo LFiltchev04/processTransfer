@@ -115,16 +115,14 @@ class http2PushService: public pushService {
 
 
 
-    struct sqPair{
-        io_uring_sqe *readSqe;
-        io_uring_sqe *writeSqe;
-    };
+    struct tcpCtx{
+        int outgoingFd;
+    }; 
     struct basicCtx{
         DIR *openDir;
         dirent* activeDentry = nullptr;
         int outgoingFd;
         nghttp2_data_provider src;
-        std::vector<sqPair*> sqVec;
     };
     struct partialWritesCtx{
         int openFd;

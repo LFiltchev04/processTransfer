@@ -31,7 +31,7 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
 
     nghttp2_session_server_new(&session, callbacks, nullptr);
     
-    this->ev.events = EPOLLIN;
+    this->ev.events = EPOLLIN | EPOLLHUP | EPOLLERR;
     this->ev.data.fd = serverSocket;
     epoll_ctl(epfd, EPOLL_CTL_ADD, serverSocket, &this->ev);
 }
@@ -40,7 +40,8 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
 
 
 void http2PushService::listenL() {
-    std::unordered_set<int> activeFds;
+    // i dont feel like putting it in its user data right now
+    std::unordered_map<int, tcpCtx> activeFds;
 
     int sixtnKB = 16 * 1024;
     uint8_t staticBuffer[sixtnKB];
@@ -48,8 +49,24 @@ void http2PushService::listenL() {
         int nfds = epoll_wait(epfd, &ev, 1, -1);
 
         if(activeFds.find(ev.data.fd) == activeFds.end()) {
-            activeFds.insert(ev.data.fd);
+            nghttp2_session_callbacks* callbacks;
+            nghttp2_session_callbacks_new(&callbacks);
+            nghttp2_session_callbacks_set_on_header_callback(callbacks, http2PushService::onHeaderRecv);
+
+
+            tcpCtx ctx;
+            ctx.outgoingFd = ev.data.fd;
+            activeFds.insert({ev.data.fd, ctx});
             
+            auto uData = static_cast<void*>(&activeFds[ev.data.fd]);
+            nghttp2_session_server_new(&session, callbacks, uData);
+
+        }
+
+        if(ev.events & (EPOLLHUP | EPOLLERR)) {
+            close(ev.data.fd);
+            activeFds.erase(ev.data.fd);
+            continue;
         }
 
 
