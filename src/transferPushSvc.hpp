@@ -9,6 +9,7 @@
 #include <stack>
 #include <liburing.h>
 #include <vector>
+#include <unordered_set>
 
 #include "dumpPresenceTable.hpp"
 #include "uploadsStaticBuffer.hpp"

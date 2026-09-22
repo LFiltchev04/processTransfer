@@ -18,7 +18,7 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
     //wont have more than like 4 nodes anyway so
     listen(serverSocket, 32);
 
-    if (io_uring_queue_init(64, &ring, 0) < 0) {
+    if (io_uring_queue_init(4096, &ring, 0) < 0) {
         throw std::runtime_error("io_uring_queue_init failed");
     }
 
@@ -28,6 +28,7 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
 
     nghttp2_data_provider dataProvider;
     dataProvider.read_callback = http2PushService::dataSrcRead;
+
     nghttp2_session_server_new(&session, callbacks, nullptr);
     
     this->ev.events = EPOLLIN;
@@ -39,38 +40,27 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
 
 
 void http2PushService::listenL() {
+    std::unordered_set<int> activeFds;
+
     int sixtnKB = 16 * 1024;
     uint8_t staticBuffer[sixtnKB];
     while (true){
         int nfds = epoll_wait(epfd, &ev, 1, -1);
 
+        if(activeFds.find(ev.data.fd) == activeFds.end()) {
+            activeFds.insert(ev.data.fd);
+            
+        }
+
+
         if(ev.events & EPOLLIN){
-            //theese inline processing steps could get quite slow if i dont thread pool this thing
+            //straight dump into async writers, should do exclusivley metadata operations, nothing too blocking
             for(int i = 0; i < nfds; ++i) {
                 nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
             }
         }
         
 
-        if(ev.events & (EPOLLOUT | EPOLLIN)){
-            //the path for reading code is lighter, i dont know whether a certain event came from a read or write
-            //so i just double check, the EPOLLINs are not that hard to process and if i decide to multithread this
-            //a simple solution like an intendWrite flag might just be enough? 
-
-            for(int i = 0; i < nfds; ++i) {
-                nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
-            }
-
-            const uint8_t* sendData;
-            ssize_t sendLen;
-            
-            do{
-                sendLen = nghttp2_session_mem_send(session, &sendData);
-                send(ev.data.fd, sendData, sendLen, 0);
-            }while(sendLen > 0);
-            
-            
-        }
     }
 }
 
@@ -259,6 +249,21 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
 
 
 
+    
+
+}
+
+
+
+
+
+ssize_t http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data) {
+    
+    int32_t stream_id = frame->hd.stream_id;
+    auto tmp = nghttp2_session_get_stream_user_data(session, stream_id);
+    basicCtx* ctx = static_cast<basicCtx*>(tmp);
+    auto dentry = ctx->activeDentry;
+
     while(dentry != nullptr){
         //write path for oversized files
         if(dentry->d_reclen > length-64){
@@ -279,24 +284,11 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
                     io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
                     io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, length, SPLICE_F_MORE);
                 
-                    //theese things cant actually dangle because it points to a pre-allocated kernel buffer, so its safe but the pointers themselves have to be wiped
-                    sqPair* pair = new sqPair{sqePipeRead, sqePipeWrite};
-                    ctx->sqVec.push_back(pair);
+
                 }
             }
         }
-    }
-    source->fd = ctx->outgoingFd;
-
-}
-
-
-
-
-
-ssize_t http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data) {
-
-    
+    }    
 
 
 
