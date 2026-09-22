@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <string>
 #include <liburing.h>
+#include <vector>
 
 #include "dumpPresenceTable.hpp"
 #include "uploadsStaticBuffer.hpp"
@@ -73,6 +74,7 @@ class http2PushService: public pushService {
         dirent* activeDentry = nullptr;
         int outgoingFd;
         nghttp2_data_provider src;
+        std::vector<io_uring_sqe*> sqVec;
     };
     struct partialWritesCtx{
         int openFd;
@@ -91,8 +93,11 @@ class http2PushService: public pushService {
     static ssize_t dataSrcRead(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data);
     static ssize_t dataSrcReadZcp(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data);
 
-    std::string getPrtlRefKey(const std::string& uniqFilePull);
-    partialWritesCtx getPwriteCtx(const std::string& uniqFilePull);
+    //callback is used only for zero-copy writes
+    static ssize_t dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data);
+
+    static std::string getPrtlRefKey(const std::string& uniqFilePull, ssize_t streamID);
+    static partialWritesCtx *getPwriteCtx(const std::string& uniqFilePull);
 
 
     public:

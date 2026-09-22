@@ -257,13 +257,37 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
         if(dentry->d_reclen > length-64){
 
 
+            std::string refKey = getPrtlRefKey(dentry->d_name, stream_id);
+            partialWritesCtx *wrtCtxRef = getPwriteCtx(refKey);
 
+            if(wrtCtxRef != nullptr) {
+                wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
+            
+                io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+                io_uring_prep_splice(sqe, wrtCtxRef->openFd, 0, ctx->outgoingFd, 0, length, 0);
+                ctx->sqVec.push_back(sqe);
+
+            
+            }
 
 
 
         }
     }
     source->fd = ctx->outgoingFd;
+
+}
+
+
+
+
+
+ssize_t http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data) {
+
+    
+
+
+
 
 }
 
@@ -281,4 +305,19 @@ int http2PushService::getRadomStream() {
 
 
 
-std
+std::string http2PushService::getPrtlRefKey(const std::string& uniqFilePull, ssize_t streamID) {
+    const size_t nameLength = strnlen(uniqFilePull.c_str(), uniqFilePull.size()+1); //size() does not include null termination, has to be added back for some reason
+    std::string uniqFilePull(reinterpret_cast<const char*>(&streamID), sizeof(streamID));
+    return uniqFilePull;
+}
+
+
+
+
+http2PushService::partialWritesCtx *http2PushService::getPwriteCtx(const std::string& uniqFilePull) {
+    auto it = partialWritesMap.find(uniqFilePull);
+    if(it != partialWritesMap.end()) {
+        return &(it->second);
+    }
+    return nullptr;
+}
