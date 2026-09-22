@@ -1,6 +1,9 @@
 #include "transferPushSvc.hpp"
 
 #include <cstring>
+#include <stdexcept>
+#include <fcntl.h>
+#include <string_view>
 
 http2PushService::http2PushService(dumpPresenceTable* table, int port): pushService(table) {
     epfd = epoll_create1(0);
@@ -15,6 +18,9 @@ http2PushService::http2PushService(dumpPresenceTable* table, int port): pushServ
     //wont have more than like 4 nodes anyway so
     listen(serverSocket, 32);
 
+    if (io_uring_queue_init(64, &ring, 0) < 0) {
+        throw std::runtime_error("io_uring_queue_init failed");
+    }
 
     nghttp2_session_callbacks* callbacks;
     nghttp2_session_callbacks_new(&callbacks);
@@ -107,6 +113,7 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
 
             nghttp2_nv pathHeader[1];
             //apperently theese need flags set to not dangle after this goes out of scope
+            ctx->src.read_callback = http2PushService::dataSrcReadZcp;
 
             nghttp2_submit_request(session, nullptr, pathHeader, 1, &ctx->src, ctx);
             allowNetworkFlush();
@@ -261,23 +268,22 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
             partialWritesCtx *wrtCtxRef = getPwriteCtx(refKey);
 
             if(wrtCtxRef != nullptr) {
-                wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
-            
-                int* pipeFds = pipeMgr.getPipe();
-                io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
-                io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, 0, pipeFds[1], 0, length, 0);
-                
-                io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
-                io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, 0, length, 0);
-                
-                
-                ctx->sqVec.push_back(sqePipeRead);
 
+                for(int x = length; x >= SIXTYFOUR_KB; x -= SIXTYFOUR_KB){
+                    wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
             
+                    int* pipeFds = pipeMgr.getPipe();
+                    io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
+                    io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, length, SPLICE_F_MORE);
+                
+                    io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                    io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, length, SPLICE_F_MORE);
+                
+                    //theese things cant actually dangle because it points to a pre-allocated kernel buffer, so its safe but the pointers themselves have to be wiped
+                    sqPair* pair = new sqPair{sqePipeRead, sqePipeWrite};
+                    ctx->sqVec.push_back(pair);
+                }
             }
-
-
-
         }
     }
     source->fd = ctx->outgoingFd;
@@ -312,9 +318,11 @@ int http2PushService::getRadomStream() {
 
 
 std::string http2PushService::getPrtlRefKey(const std::string& uniqFilePull, ssize_t streamID) {
-    const size_t nameLength = strnlen(uniqFilePull.c_str(), uniqFilePull.size()+1); //size() does not include null termination, has to be added back for some reason
-    std::string uniqFilePull(reinterpret_cast<const char*>(&streamID), sizeof(streamID));
-    return uniqFilePull;
+    std::string key;
+    key.reserve(sizeof(streamID) + uniqFilePull.size() + 1);
+    key.append(reinterpret_cast<const char*>(&streamID), sizeof(streamID));
+    key.append(uniqFilePull);
+    return key;
 }
 
 

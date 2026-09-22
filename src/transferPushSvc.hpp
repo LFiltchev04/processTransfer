@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <unordered_map>
 #include <string>
+#include <stack>
 #include <liburing.h>
 #include <vector>
 
@@ -14,7 +15,7 @@
 #include "dataPack.hpp"
 
 #define THIRTYTWO_KB (32 * 1024)
-
+#define SIXTYFOUR_KB (64 * 1024)
 
 
 
@@ -114,8 +115,8 @@ class http2PushService: public pushService {
 
 
     struct sqPair{
-        io_uring_sqe readSqe;
-        io_uring_sqe writeSqe;
+        io_uring_sqe *readSqe;
+        io_uring_sqe *writeSqe;
     };
     struct basicCtx{
         DIR *openDir;
