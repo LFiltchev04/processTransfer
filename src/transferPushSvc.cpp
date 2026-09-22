@@ -35,8 +35,27 @@ void http2PushService::listenL() {
     while (true){
         int nfds = epoll_wait(epfd, &ev, 1, -1);
 
-        for(int i = 0; i < nfds; ++i) {
-            nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
+        if(ev.events & EPOLLIN){
+            for(int i = 0; i < nfds; ++i) {
+                nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
+            }
+        }
+        
+
+        if(ev.events & (EPOLLOUT | EPOLLIN)){
+            for(int i = 0; i < nfds; ++i) {
+                nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
+            }
+
+            const uint8_t* sendData;
+            ssize_t sendLen;
+            
+            do{
+                sendLen = nghttp2_session_mem_send(session, &sendData);
+                send(ev.data.fd, sendData, sendLen, 0);
+            }while(sendLen > 0);
+            
+            
         }
     }
 }
