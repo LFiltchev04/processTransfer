@@ -36,6 +36,7 @@ void http2PushService::listenL() {
         int nfds = epoll_wait(epfd, &ev, 1, -1);
 
         if(ev.events & EPOLLIN){
+            //theese inline processing steps could get quite slow if i dont thread pool this thing
             for(int i = 0; i < nfds; ++i) {
                 nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
             }
@@ -43,6 +44,10 @@ void http2PushService::listenL() {
         
 
         if(ev.events & (EPOLLOUT | EPOLLIN)){
+            //the path for reading code is lighter, i dont know whether a certain event came from a read or write
+            //so i just double check, the EPOLLINs are not that hard to process and if i decide to multithread this
+            //a simple solution like an intendWrite flag might just be enough? 
+
             for(int i = 0; i < nfds; ++i) {
                 nghttp2_session_mem_recv(session, staticBuffer, sixtnKB);
             }
@@ -116,104 +121,106 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
 
 
 ssize_t http2PushService::dataSrcRead(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data) {
-    basicCtx* ctx = reinterpret_cast<basicCtx*>(source->ptr);
+        basicCtx* ctx = reinterpret_cast<basicCtx*>(source->ptr);
 
-    //if this thing does not overflow at least a dozen times and waste me at least a week of time to chase
-    //down later i wont be pleased
+        //if this thing does not overflow at least a dozen times and waste me at least a week of time to chase
+        //down later i wont be pleased
     
-    dirent* dentry = ctx->activeDentry;
-    if(ctx->activeDentry == nullptr){   
-        dentry = readdir(ctx->openDir);
-        ctx->activeDentry = dentry;
-    }
+        dirent* dentry = ctx->activeDentry;
+        if(ctx->activeDentry == nullptr){   
+            dentry = readdir(ctx->openDir);
+            ctx->activeDentry = dentry;
+        }
 
-    int deferCount = 0;
+        int deferCount = 0;
     
-    while(dentry != nullptr) {
+        while(dentry != nullptr) {
         //assuming its all a flat structure with nothing weird, no nested dirs no nothing
 
         
-        const size_t nameLength = strnlen(dentry->d_name, sizeof(dentry->d_name));
-        std::string uniqFilePull(reinterpret_cast<const char*>(&stream_id), sizeof(stream_id));
-        uniqFilePull.append(dentry->d_name, nameLength);
+            const size_t nameLength = strnlen(dentry->d_name, sizeof(dentry->d_name));
+            std::string uniqFilePull(reinterpret_cast<const char*>(&stream_id), sizeof(stream_id));
+            uniqFilePull.append(dentry->d_name, nameLength);
 
-        partialWritesCtx *partialWriteRef;
-        if(partialWritesMap.find(uniqFilePull) == partialWritesMap.end()) {
-            partialWritesCtx partialWrite;
-            partialWrite.lastWriteEnd = 0u;
-            partialWrite.openFd = -1;
+            partialWritesCtx *partialWriteRef;
+            if(partialWritesMap.find(uniqFilePull) == partialWritesMap.end()) {
+                partialWritesCtx partialWrite;
+                partialWrite.lastWriteEnd = 0u;
+                partialWrite.openFd = -1;
 
-            partialWritesMap[uniqFilePull] = partialWrite;
-            partialWriteRef = &partialWritesMap[uniqFilePull];
-
-
-        }
-        else {
-            partialWriteRef = &partialWritesMap[uniqFilePull];
-        }
+                partialWritesMap[uniqFilePull] = partialWrite;
+                partialWriteRef = &partialWritesMap[uniqFilePull];
 
 
-        if(partialWriteRef->openFd == -1){
+            }
+            else {
+                partialWriteRef = &partialWritesMap[uniqFilePull];
+            }
+
+
+            if(partialWriteRef->openFd == -1){
                 partialWriteRef->openFd = open(dentry->d_name, O_RDONLY);
-        }
+            }
 
-        //kind of a rough saftey margin, this wil most definitley overfow and waste a whole lot of padding bytes in the rare event it works OK
-        if(dentry->d_reclen > length-64){
+            //kind of a rough saftey margin, this wil most definitley overfow and waste a whole lot of padding bytes in the rare event it works OK
+            if(dentry->d_reclen > length-64){
 
             
-            partialWriteRef->lastWriteEnd = 0u;
-            packData pck;
-            pck.fileName = dentry->d_name;
-            pck.size = length-64;
-
-            if(sizeof(pck) > 64){
-                    throw std::runtime_error("the metadata string in the frame packer blew the buffer");
-            }
-
-            //write for bigger than files
-            memcpy(buf, &pck, sizeof(pck));
-            lseek(partialWriteRef->openFd, partialWriteRef->lastWriteEnd, SEEK_SET);
-
-            ssize_t bytesRead = read(partialWriteRef->openFd, buf + sizeof(pck), pck.size);
-            if(bytesRead > 0) {
-                partialWriteRef->lastWriteEnd += bytesRead;
-            }
-
-            deferCount++;
-                
-        }else{
-
-            int bufPosPtr = length-64;
-            while(dentry->d_reclen <= bufPosPtr) {
-
-    
-                partialWritesMap[uniqFilePull] = *partialWriteRef;
-
+                partialWriteRef->lastWriteEnd = 0u;
                 packData pck;
                 pck.fileName = dentry->d_name;
-                pck.size = dentry->d_reclen;
+                pck.size = length-64;
 
                 if(sizeof(pck) > 64){
                     throw std::runtime_error("the metadata string in the frame packer blew the buffer");
                 }
 
-                memcpy(buf + sizeof(pck), &pck, sizeof(pck));   
+                //write for bigger than files
+                memcpy(buf, &pck, sizeof(pck));
                 lseek(partialWriteRef->openFd, partialWriteRef->lastWriteEnd, SEEK_SET);
 
                 ssize_t bytesRead = read(partialWriteRef->openFd, buf + sizeof(pck), pck.size);
-                //will just let it blow up if it fails
-                
-                close(partialWriteRef->openFd);
-                partialWritesMap.erase(uniqFilePull);
-                
-                deferCount++;
-            }
+                if(bytesRead > 0) {
+                    partialWriteRef->lastWriteEnd += bytesRead;
+                }
 
-        dentry = readdir(ctx->openDir);
-        if(deferCount > 50){
-            return NGHTTP2_ERR_DEFERRED;
+                deferCount++;
+                
+            }else{
+
+                int bufPosPtr = length-64;
+                while(dentry->d_reclen <= bufPosPtr) {
+
+    
+                    partialWritesMap[uniqFilePull] = *partialWriteRef;
+
+                    packData pck;
+                    pck.fileName = dentry->d_name;
+                    pck.size = dentry->d_reclen;
+
+                    if(sizeof(pck) > 64){
+                        throw std::runtime_error("the metadata string in the frame packer blew the buffer");
+                    }
+
+                    memcpy(buf + sizeof(pck), &pck, sizeof(pck));   
+                    lseek(partialWriteRef->openFd, partialWriteRef->lastWriteEnd, SEEK_SET);
+
+                    ssize_t bytesRead = read(partialWriteRef->openFd, buf + sizeof(pck), pck.size);
+                    //will just let it blow up if it fails
+                
+                    close(partialWriteRef->openFd);
+                    partialWritesMap.erase(uniqFilePull);
+                
+                    deferCount++;
+                }
+
+            dentry = readdir(ctx->openDir);
+            if(deferCount > 50){
+                return NGHTTP2_ERR_DEFERRED;
+            }
         }
+
+    
     }
 
-    //reads directory
-    return 0;}
+}
