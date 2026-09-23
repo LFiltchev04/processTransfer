@@ -331,11 +331,11 @@ http2PushService::partialWritesCtx* http2PushService::configurePwrite(basicCtx* 
         //sets the needed amount of cqes to complete it, avoids any sort of screwups with increment/decrement race conditions
         unsigned int divsInto = ctx->activeDentry->d_reclen / len;
         //once for the header write and another one for packData append
-        ctx->wrtCtx->completionTracker = divsInto +2;
+        ctx->wrtCtx->completionTracker = (divsInto +2)*2; //the completions are doubled since the zero copy requires 2 sqe`s per chunk load baseline, both can do the short read bullshit btw
 
         if(ctx->activeDentry->d_reclen % len != 0){
             // once again for a remainder chunk
-            ctx->wrtCtx->completionTracker += 1;
+            ctx->wrtCtx->completionTracker += 2;
         }
 
     }
