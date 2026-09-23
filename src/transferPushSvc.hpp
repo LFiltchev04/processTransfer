@@ -46,6 +46,13 @@ class pipePool{
     }
 
     void returnPipe(int* pipeFds){
+        if(pipeFds == nullptr or pool.size() >= 64){
+            return;
+        }
+
+        if(pipeFds < fdPool[0] or pipeFds > fdPool[63]){
+            return;
+        }
         pool.push(pipeFds);
     }
 };
@@ -117,23 +124,22 @@ class http2PushService: public pushService {
         int outgoingFd;
         nghttp2_session* session;
     }; 
+    //this one is weird, its semi-shared, completion trackers have to be allocated once and then only incremented
+    //pipes are scoped to a single sqe-cqe pair
+    struct partialWritesCtx{
+        std::mutex *mtx;
+        unsigned int completionTracker;
+        int* pipes[2];
+        std::string refkey;
+        
+        partialWritesCtx(){completionTracker = 0u; mtx = new std::mutex();}
+    };
     struct basicCtx{
         DIR *openDir;
         dirent* activeDentry = nullptr;
         int outgoingFd;
         unsigned int dentryOffset = 0u;
-    };
-
-    //this one is weird, its semi-shared, completion trackers have to be allocated once and then only incremented
-    //pipes are scoped to a single sqe-cqe pair
-    struct partialWritesCtx{
-        std::mutex *mtx;
-        unsigned int* completionTracker;
-        int* pipes[2];
-        int openFd;
-        std::string refkey;
-        
-        partialWritesCtx(){completionTracker = new unsigned int(0u); openFd = -1; mtx = new std::mutex();}
+        partialWritesCtx *wrtCtx = nullptr;
     };
 
     static std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
@@ -154,6 +160,7 @@ class http2PushService: public pushService {
     static std::string getPrtlRefKey(const std::string& uniqFilePull, ssize_t streamID);
     static partialWritesCtx *getPwriteCtx(const std::string& uniqFilePull);
 
+    static partialWritesCtx* configurePwrite(basicCtx&); 
     static void cqeHandler(io_uring_cqe* cqe);
 
     public:

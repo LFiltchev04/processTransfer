@@ -65,6 +65,7 @@ void http2PushService::listenL() {
             ctx.outgoingFd = ev.data.fd;
             
             activeFds.insert({ev.data.fd, ctx});
+            //should point straight right to the hashmap so no dangling risk? 
             auto safePointer = &activeFds[ev.data.fd];
             safePointer->outgoingFd = ev.data.fd;
             nghttp2_session_server_new(&safePointer->session, callbacks, safePointer);
@@ -153,116 +154,6 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
 
 
 
-ssize_t http2PushService::dataSrcRead(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data) {
-        basicCtx* ctx = reinterpret_cast<basicCtx*>(source->ptr);
-
-        //if this thing does not overflow at least a dozen times and waste me at least a week of time to chase
-        //down later i wont be pleased
-    
-        dirent* dentry = ctx->activeDentry;
-        if(ctx->activeDentry == nullptr){   
-            dentry = readdir(ctx->openDir);
-            ctx->activeDentry = dentry;
-        }
-
-        int deferCount = 0;
-    
-        while(dentry != nullptr) {
-        //assuming its all a flat structure with nothing weird, no nested dirs no nothing
-
-        
-            const size_t nameLength = strnlen(dentry->d_name, sizeof(dentry->d_name));
-            std::string uniqFilePull(reinterpret_cast<const char*>(&stream_id), sizeof(stream_id));
-            uniqFilePull.append(dentry->d_name, nameLength);
-
-            partialWritesCtx *partialWriteRef;
-            if(partialWritesMap.find(uniqFilePull) == partialWritesMap.end()) {
-                partialWritesCtx partialWrite;
-                partialWrite.lastWriteEnd = 0u;
-                partialWrite.openFd = -1;
-
-                partialWritesMap[uniqFilePull] = partialWrite;
-                partialWriteRef = &partialWritesMap[uniqFilePull];
-
-
-            }
-            else {
-                partialWriteRef = &partialWritesMap[uniqFilePull];
-            }
-
-
-            if(partialWriteRef->openFd == -1){
-                partialWriteRef->openFd = open(dentry->d_name, O_RDONLY);
-            }
-
-            //kind of a rough saftey margin, this wil most definitley overfow and waste a whole lot of padding bytes in the rare event it works OK
-            if(dentry->d_reclen > length-64){
-
-            
-                partialWriteRef->lastWriteEnd = 0u;
-                packData pck;
-                pck.fileName = dentry->d_name;
-                pck.size = length-64;
-
-                if(sizeof(pck) > 64){
-                    throw std::runtime_error("the metadata string in the frame packer blew the buffer");
-                }
-
-                //write for bigger than files
-                memcpy(buf, &pck, sizeof(pck));
-                lseek(partialWriteRef->openFd, partialWriteRef->lastWriteEnd, SEEK_SET);
-
-                ssize_t bytesRead = read(partialWriteRef->openFd, buf + sizeof(pck), pck.size);
-                if(bytesRead > 0) {
-                    partialWriteRef->lastWriteEnd += bytesRead;
-                }
-
-                deferCount++;
-                
-            }else{
-
-                int bufPosPtr = length-64;
-                while(dentry->d_reclen <= bufPosPtr) {
-
-    
-                    partialWritesMap[uniqFilePull] = *partialWriteRef;
-
-                    packData pck;
-                    pck.fileName = dentry->d_name;
-                    pck.size = dentry->d_reclen;
-
-                    if(sizeof(pck) > 64){
-                        throw std::runtime_error("the metadata string in the frame packer blew the buffer");
-                    }
-
-                    memcpy(buf + sizeof(pck), &pck, sizeof(pck));   
-                    lseek(partialWriteRef->openFd, partialWriteRef->lastWriteEnd, SEEK_SET);
-
-                    ssize_t bytesRead = read(partialWriteRef->openFd, buf + sizeof(pck), pck.size);
-                    //will just let it blow up if it fails
-                
-                    close(partialWriteRef->openFd);
-                    partialWritesMap.erase(uniqFilePull);
-                
-                    deferCount++;
-                }
-
-            dentry = readdir(ctx->openDir);
-            if(deferCount > 50){
-                return NGHTTP2_ERR_DEFERRED;
-            }
-        }
-
-    
-    }
-
-    allowNetworkFlush();
-
-    return NGHTTP2_RST_STREAM;
-
-}
-
-
 
 
 
@@ -280,10 +171,32 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
     dirent* dentry = ctx->activeDentry;
     //this is cold open dentry transmission
     if(ctx->activeDentry == nullptr){
+        partialWritesCtx *wrtCtx = new partialWritesCtx();
+        ctx->wrtCtx = wrtCtx;
+
         dentry = readdir(ctx->openDir);
         ctx->activeDentry = dentry;
+        if(ctx->activeDentry->d_reclen > length){
+            //sets the needed amount of cqes to complete it, avoids any sort of screwups with increment/decrement race conditions
+            unsigned int divsInto = ctx->activeDentry->d_reclen / length;
+            //once for the header write and another one for packData append
+            ctx->wrtCtx->completionTracker = divsInto +2;
+
+            if(ctx->activeDentry->d_reclen % length != 0){
+                // once again for a remainder chunk
+                ctx->wrtCtx->completionTracker += 1;
+            }
+
+        }
+
+        else{
+            //once for header, once for packData, once for data
+            ctx->wrtCtx->completionTracker = 3;
+        }
         ctx->dentryOffset = 0u;
+        
         source->fd = open(dentry->d_name, O_RDONLY);
+        
         return 0;
     }
 
@@ -291,6 +204,11 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
     if(ctx->dentryOffset == dentry->d_reclen){
         ctx->activeDentry = readdir(ctx->openDir);
         ctx->dentryOffset = 0u;
+        
+        //the old one has to be collected entirely by the cqe callbacks, the reference is held there, the old one does not dangle
+        partialWritesCtx *wrtCtx = new partialWritesCtx();
+        ctx->wrtCtx = wrtCtx;
+
         source->fd = open(ctx->activeDentry->d_name, O_RDONLY);
         return 0;
     }
@@ -305,17 +223,19 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
 
 
 int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, const uint8_t *framehd, size_t length, nghttp2_data_source *source, void *user_data) {
-    
+    tcpCtx* tcpCtxRef = static_cast<tcpCtx*>(user_data);
+
     int32_t stream_id = frame->hd.stream_id;
     auto tmp = nghttp2_session_get_stream_user_data(session, stream_id);
     basicCtx* ctx = static_cast<basicCtx*>(tmp);
     auto dentry = ctx->activeDentry;
+    
 
-
-    while(dentry != nullptr){
+    if(dentry != nullptr){
         //write path for oversized files
         if(dentry->d_reclen > length-64){
 
+            partialWritesCtx *wrtCtxRef = ctx->wrtCtx;
 
             //this is the header insert
             io_uring_sqe* sqeWriteFrame = io_uring_get_sqe(&ring);
@@ -325,38 +245,34 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
 
             //this is payload insert
             if(dentry->d_reclen >= length-64){
-                if(wrtCtxRef->openFd == -1){
-                    wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
-                }
-
-                partialWritesCtx *wrtCtx = new partialWritesCtx();
-
                 int* pipeFds = pipeMgr.getPipe();
 
                 io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
                 sqePipeRead->flags = IOSQE_IO_LINK;
                 sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
-                io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
-                    
-                io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
-                sqePipeWrite->flags = IOSQE_IO_LINK;
-                sqePipeWrite->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
-                io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+                io_uring_prep_splice(sqePipeRead, tcpCtxRef->outgoingFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+                
 
+                io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                sqePipeWrite->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
+                io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, tcpCtxRef->outgoingFd, -1, SIXTYFOUR_KB, 0);
+
+
+            }else{
 
             }
 
 
             //DELETE
+            /*
             for(int x = length; x >= SIXTYFOUR_KB; x -= SIXTYFOUR_KB){
-                wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
-            
+                
                 int* pipeFds = pipeMgr.getPipe();
 
                 io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
                 sqePipeRead->flags = IOSQE_IO_LINK;
                 sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
-                io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+                io_uring_prep_splice(sqePipeRead, `wrtCtxRef->openFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
                 
                 io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
                 sqePipeWrite->flags = IOSQE_IO_LINK;
@@ -375,8 +291,9 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
                     io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, x, 0);
                 }
 
-            }
-        } //UP TO HERE
+            }*/   //UP TO HERE
+        } 
+         
        
 
     }    
