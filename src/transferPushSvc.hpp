@@ -58,7 +58,11 @@ class pipePool{
 };
 
 
+class completionTracker{
+    unsigned int compl
 
+    public:
+}
 
 
 
@@ -140,6 +144,7 @@ class http2PushService: public pushService {
         int outgoingFd;
         unsigned int dentryOffset = 0u;
         partialWritesCtx *wrtCtx = nullptr;
+
     };
 
     static std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
