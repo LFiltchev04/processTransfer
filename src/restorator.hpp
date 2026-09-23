@@ -17,7 +17,6 @@ class restorator{
     int targetPid;
     const char* liveContainerRoot;
 
-    
     public:
     restorator(dumpFile* dump);
     ~restorator();

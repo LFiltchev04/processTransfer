@@ -10,6 +10,7 @@ struct bufEntry {
 };
 
 //64 kb static bufffers
+//theese are likely getting the backspace relativley soon, no need to have them around
 class uploadStaticBuffer {
     uint8_t pool[POOL_SIZE];
     std::stack<bufEntry*> freeStack;
