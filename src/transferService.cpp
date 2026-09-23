@@ -237,11 +237,12 @@ int httpTransferService::dataChunkRecvCback(nghttp2_session *session, uint8_t fl
     auto ctxMap = static_cast<std::unordered_map<int32_t, httpTransferService::basicCtx>*>(user_data);
 
     //theese neanderthals saw fit to give me a stream ID but no pointer to my actual struct inside tha callback signatures for god knows what reason
-    //apperently you just HAVE to call this thing to get your stuff and then cast it
+    //apperently you just HAVE to call this thing to get your stuff and then cast it but the global context can just be in the call sig. of the callback 
     auto temp = nghttp2_session_get_stream_user_data(session, stream_id);
     basicCtx* bctx = static_cast<basicCtx*>(temp);
 
     httpTransferService::basicCtx &bctx = (*ctxMap)[stream_id];
+    //ill drop the sync writers
     ssize_t written = write(bctx->openFd, data, len);
     if(written < 0){
         throw std::runtime_error("write failed in data chunk callback: " + std::string(std::strerror(errno)));

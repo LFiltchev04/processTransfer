@@ -305,50 +305,75 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
         if(dentry->d_reclen > length-64){
 
 
-            std::string refKey = getPrtlRefKey(dentry->d_name, stream_id);
-            partialWritesCtx *wrtCtxRef = getPwriteCtx(refKey);
-            wrtCtxRef->refkey = refKey;
-
-            if(wrtCtxRef != nullptr) {
-
-                io_uring_sqe* sqeWriteFrame = io_uring_get_sqe(&ring);
-                sqeWriteFrame->flags = IOSQE_IO_LINK;
-                sqeWriteFrame->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
-                io_uring_prep_write(sqeWriteFrame, ctx->outgoingFd, framehd, sizeof(framehd), 0);
-
-
-                for(int x = length; x >= SIXTYFOUR_KB; x -= SIXTYFOUR_KB){
-                    wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
+            //std::string refKey = getPrtlRefKey(dentry->d_name, stream_id);
             
-                    int* pipeFds = pipeMgr.getPipe();
+            
 
+
+
+
+            //this is the header insert
+            io_uring_sqe* sqeWriteFrame = io_uring_get_sqe(&ring);
+            sqeWriteFrame->flags = IOSQE_IO_LINK;
+            sqeWriteFrame->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
+            io_uring_prep_write(sqeWriteFrame, ctx->outgoingFd, framehd, sizeof(framehd), SPLICE_F_MORE);
+
+            //this is payload insert
+            if(dentry->d_reclen >= length-64){
+                if(wrtCtxRef->openFd == -1){
+                    wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
+                }
+
+                partialWritesCtx *wrtCtx = new partialWritesCtx();
+
+                int* pipeFds = pipeMgr.getPipe();
+
+                io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
+                sqePipeRead->flags = IOSQE_IO_LINK;
+                sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
+                io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+                    
+                io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                sqePipeWrite->flags = IOSQE_IO_LINK;
+                sqePipeWrite->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
+                io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+
+
+            }
+
+
+            //DELETE
+            for(int x = length; x >= SIXTYFOUR_KB; x -= SIXTYFOUR_KB){
+                wrtCtxRef->openFd = open(dentry->d_name, O_RDONLY);
+            
+                int* pipeFds = pipeMgr.getPipe();
+
+                io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
+                sqePipeRead->flags = IOSQE_IO_LINK;
+                sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
+                io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+                
+                io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                sqePipeWrite->flags = IOSQE_IO_LINK;
+                io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+
+                wrtCtxRef->pipes.push_back({pipeFds[0], pipeFds[1]});
+                
+                if(x < SIXTYFOUR_KB){
+                    //since the chaining model interface is so stupid you have to not set a chain flag for the last one otherwise it will pull in the next unrelated sqe of another operation in here
+                    //absolute neanderthals
+                int* pipeFds = pipeMgr.getPipe();
                     io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
-                    sqePipeRead->flags = IOSQE_IO_LINK;
-                    sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
-                    io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
+                    io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, x, 0);
                 
                     io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
-                    sqePipeWrite->flags = IOSQE_IO_LINK;
-                    io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, SIXTYFOUR_KB, SPLICE_F_MORE);
-
-                    wrtCtxRef->pipes.push_back({pipeFds[0], pipeFds[1]});
-                
-                    if(x < SIXTYFOUR_KB){
-                        //since the chaining model interface is so stupid you have to not set a chain flag for the last one otherwise it will pull in the next unrelated sqe of another operation in here
-                        //absolute neanderthals
-                        int* pipeFds = pipeMgr.getPipe();
-                        io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
-                        io_uring_prep_splice(sqePipeRead, wrtCtxRef->openFd, -1, pipeFds[1], -1, x, 0);
-                
-                        io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
-                        io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, x, 0);
-                    }
-
+                    io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, ctx->outgoingFd, -1, x, 0);
                 }
-            }
-        }else{
 
-        }
+            }
+        } //UP TO HERE
+       
+
     }    
 
 

@@ -123,12 +123,17 @@ class http2PushService: public pushService {
         int outgoingFd;
         nghttp2_data_provider src;
     };
+
+    //this one is weird, its semi-shared, completion trackers have to be allocated once and then only incremented
+    //pipes are scoped to a single sqe-cqe pair
     struct partialWritesCtx{
-        std::vector<int[2]> pipes;
+        std::mutex *mtx;
+        unsigned int* completionTracker;
+        int* pipes[2];
         int openFd;
         std::string refkey;
-        unsigned int lastWriteEnd; //can be swapped out for a multiplied window size but meh
-        partialWritesCtx(){lastWriteEnd = 0u; openFd = -1; }
+        
+        partialWritesCtx(){completionTracker = new unsigned int(0u); openFd = -1; mtx = new std::mutex();}
     };
 
     static std::unordered_map<std::string, partialWritesCtx> partialWritesMap;
