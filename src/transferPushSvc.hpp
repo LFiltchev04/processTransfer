@@ -160,7 +160,7 @@ class http2PushService: public pushService {
     static std::string getPrtlRefKey(const std::string& uniqFilePull, ssize_t streamID);
     static partialWritesCtx *getPwriteCtx(const std::string& uniqFilePull);
 
-    static partialWritesCtx* configurePwrite(basicCtx&); 
+    static partialWritesCtx* configurePwrite(basicCtx* ctx, size_t& len); 
     static void cqeHandler(io_uring_cqe* cqe);
 
     public:
