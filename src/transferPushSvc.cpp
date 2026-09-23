@@ -110,7 +110,10 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
     std::string_view headerName(reinterpret_cast<const char*>(name), name_len);
     std::string_view headerValue(reinterpret_cast<const char*>(value), value_len);
 
-    if(headerName == ":status" and headerValue != "200") {
+    //kinda think thats nonsense
+    if((headerName == ":status" and headerValue != "200") 
+                             or 
+       (headerName == ":method" and headerValue != "GET")) {
         //closes stream, keeps tcp open
         nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE, frame->hd.stream_id, NGHTTP2_INTERNAL_ERROR);
             
@@ -157,10 +160,7 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
 
 
 
-
-
-//this thing apperently can just hand me a header that i send from user space and then set up a zero copy io_uring submittion with strict ordering, should yield the event loop fast
-//as well as solving the DEFERRED and reader writer split nonsense in the epoll_wait loop, its not like the other thing where i have to track copmletions or anything so a fire-and-forget approach works
+//the final split decided for this ought to be just writing events, completion queues are needed to finish
 ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data) {
     auto tmp = nghttp2_session_get_stream_user_data(session, stream_id);
     basicCtx* ctx = static_cast<basicCtx*>(tmp);
@@ -176,29 +176,17 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
 
         dentry = readdir(ctx->openDir);
         ctx->activeDentry = dentry;
-        if(ctx->activeDentry->d_reclen > length){
-            //sets the needed amount of cqes to complete it, avoids any sort of screwups with increment/decrement race conditions
-            unsigned int divsInto = ctx->activeDentry->d_reclen / length;
-            //once for the header write and another one for packData append
-            ctx->wrtCtx->completionTracker = divsInto +2;
-
-            if(ctx->activeDentry->d_reclen % length != 0){
-                // once again for a remainder chunk
-                ctx->wrtCtx->completionTracker += 1;
-            }
-
-        }
-
-        else{
-            //once for header, once for packData, once for data
-            ctx->wrtCtx->completionTracker = 3;
-        }
-        ctx->dentryOffset = 0u;
         
+        auto wrCtx = configurePwrite(ctx, length);
+        ctx->wrtCtx = wrCtx;
+
+        ctx->dentryOffset = 0u;
         source->fd = open(dentry->d_name, O_RDONLY);
         
         return 0;
     }
+        
+    
 
     //this is directory advance if the current file was fully transmitted
     if(ctx->dentryOffset == dentry->d_reclen){
@@ -259,7 +247,7 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
 
 
             }else{
-
+                
             }
 
 
@@ -337,3 +325,29 @@ http2PushService::partialWritesCtx *http2PushService::getPwriteCtx(const std::st
 }
 
 
+
+http2PushService::partialWritesCtx* http2PushService::configurePwrite(basicCtx* ctx, size_t& len) {
+    if(ctx->activeDentry->d_reclen > len){
+        //sets the needed amount of cqes to complete it, avoids any sort of screwups with increment/decrement race conditions
+        unsigned int divsInto = ctx->activeDentry->d_reclen / len;
+        //once for the header write and another one for packData append
+        ctx->wrtCtx->completionTracker = divsInto +2;
+
+        if(ctx->activeDentry->d_reclen % len != 0){
+            // once again for a remainder chunk
+            ctx->wrtCtx->completionTracker += 1;
+        }
+
+    }
+
+
+    if(ctx->activeDentry->d_ino < len){
+        ctx->wrtCtx->completionTracker = 3; //once for header, once for packData, once for data
+    }
+}
+
+
+//okay apperently this godsmaned event model is so utterly terrible you cannot actually count on it to trigger an event when all the data is
+//actually sent over the wire but only when the kernel accepted it, so you gotta track whether a " COMPLETION " was AT ALL a completion
+//then you gotta resubmit it, effectivley meaning you need to do your own chaining and context management for the whole entire thing
+//its not implemented in the kernel, it should be, but clearly i cannot achieve such GODLY insight as the person who designed this WONDERFUL system
