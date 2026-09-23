@@ -278,15 +278,26 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
 
     
     dirent* dentry = ctx->activeDentry;
-        if(ctx->activeDentry == nullptr){   
-            dentry = readdir(ctx->openDir);
-            ctx->activeDentry = dentry;
-        }
-
-
-
-    
+    //this is cold open dentry transmission
+    if(ctx->activeDentry == nullptr){
+        dentry = readdir(ctx->openDir);
+        ctx->activeDentry = dentry;
+        ctx->dentryOffset = 0u;
+        source->fd = open(dentry->d_name, O_RDONLY);
         return 0;
+    }
+
+    //this is directory advance if the current file was fully transmitted
+    if(ctx->dentryOffset == dentry->d_reclen){
+        ctx->activeDentry = readdir(ctx->openDir);
+        ctx->dentryOffset = 0u;
+        source->fd = open(ctx->activeDentry->d_name, O_RDONLY);
+        return 0;
+    }
+
+    //shouldnt happen
+    throw std::runtime_error("unexpected state in dataSrcReadZcp");
+    return 0;
 }
 
 
@@ -300,16 +311,10 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
     basicCtx* ctx = static_cast<basicCtx*>(tmp);
     auto dentry = ctx->activeDentry;
 
+
     while(dentry != nullptr){
         //write path for oversized files
         if(dentry->d_reclen > length-64){
-
-
-            //std::string refKey = getPrtlRefKey(dentry->d_name, stream_id);
-            
-            
-
-
 
 
             //this is the header insert
@@ -415,22 +420,3 @@ http2PushService::partialWritesCtx *http2PushService::getPwriteCtx(const std::st
 }
 
 
-void http2PushService::cqeHandler(io_uring_cqe* cqe) {
-    partialWritesCtx* wrtCtxRef = reinterpret_cast<partialWritesCtx*>(cqe->user_data);
-    // there is an ordering guarantee, the first completion entry should be that of the first submission entry so i should aways
-    //remote the first element of the vector, should align but if i change the thing its good to know it can wipe the pipes of active writers
-    
-    
-    if(!wrtCtxRef->pipes.empty()) {
-        int* pipeFds = wrtCtxRef->pipes.front();
-        wrtCtxRef->pipes.erase(wrtCtxRef->pipes.begin());
-        pipeMgr.returnPipe(pipeFds);
-
-        if(wrtCtxRef->pipes.empty()) {
-            close(wrtCtxRef->openFd);
-            partialWritesMap.erase(wrtCtxRef->refkey);
-        }
-    }
-
-    wrtCtxRef->pipes.shrink_to_fit();
-}

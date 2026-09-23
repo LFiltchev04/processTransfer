@@ -121,7 +121,7 @@ class http2PushService: public pushService {
         DIR *openDir;
         dirent* activeDentry = nullptr;
         int outgoingFd;
-        nghttp2_data_provider src;
+        unsigned int dentryOffset = 0u;
     };
 
     //this one is weird, its semi-shared, completion trackers have to be allocated once and then only incremented
