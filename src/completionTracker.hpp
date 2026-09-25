@@ -6,16 +6,15 @@
 //can support multithreaded access, no thread pinning needed 
 struct pHolder{
     int targetWrite;
-    void* resubmittableSqe;
 
-    pHolder(){targetWrite = 0; resubmittableSqe = nullptr;}
+    pHolder(){targetWrite = 0;}
     
-    pHolder(int tgtWrt, void* sqer){
+    pHolder(int tgtWrt){
         targetWrite = tgtWrt;
-        resubmittableSqe = sqer;
     }
 };
 
+//tracks active completion using fifo 
 class completionTracker{
     uint16_t numCompletions; //absolute number of completions to look for
     pHolder *holders;
@@ -33,10 +32,21 @@ class completionTracker{
     pHolder* selfRegister(uint16_t targetWrite){
         std::lock_guard<std::mutex> lck(mtx);
         
-        this->lastElem = lastElem + sizeof(pHolder);
-            
+        lastElem->targetWrite = targetWrite;
+        this->lastElem = lastElem + 1;
+        return lastElem - 1;
     }
 
+    uint16_t remainingBytes(){
+        std::lock_guard<std::mutex> lck(mtx);
+
+        
+        return numCompletions; 
+
+        
+
+
+    }
     ~completionTracker(){
         delete[] holders;
     }
@@ -44,3 +54,4 @@ class completionTracker{
 
 
 };
+

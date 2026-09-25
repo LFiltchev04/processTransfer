@@ -92,6 +92,7 @@ void http2PushService::listenL() {
 
             activeFds.erase(ev.data.fd);
             continue;
+            //never lets go of tcp connections
         }
 
 
@@ -146,7 +147,7 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
             ctx->src.read_callback = http2PushService::dataSrcReadZcp;
 
             nghttp2_submit_request(session, nullptr, pathHeader, 1, &ctx->src, ctx);
-            allowNetworkFlush();
+            //allowNetworkFlush();
         }
     }
 
@@ -173,6 +174,8 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
     if(ctx->activeDentry == nullptr){
         partialWritesCtx *wrtCtx = new partialWritesCtx();
         ctx->wrtCtx = wrtCtx;
+        wrtCtx->mtx = new std::mutex();
+
 
         dentry = readdir(ctx->openDir);
         ctx->activeDentry = dentry;
@@ -186,10 +189,21 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
         return 0;
     }
         
+    if(ctx->activeDentry->d_reclen < length - 64){
+        auto wrCtx = configurePwrite(ctx, length);
+        ctx->wrtCtx = wrCtx;
+
+        source->fd = open(ctx->activeDentry->d_name, O_RDONLY);
+
+        configurePwrite(ctx, length);
+    }
+
+    
     
 
-    //this is directory advance if the current file was fully transmitted
+    //this is directory advance if the current file was fully transmitted or not long enough
     if(ctx->dentryOffset == dentry->d_reclen){
+
         ctx->activeDentry = readdir(ctx->openDir);
         ctx->dentryOffset = 0u;
         
@@ -199,6 +213,10 @@ ssize_t http2PushService::dataSrcReadZcp(nghttp2_session *session, int32_t strea
 
         source->fd = open(ctx->activeDentry->d_name, O_RDONLY);
         return 0;
+    }
+    if(dentry == nullptr){
+       //has completed the entire write
+       return 0;
     }
 
     //shouldnt happen
@@ -229,26 +247,74 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
             io_uring_sqe* sqeWriteFrame = io_uring_get_sqe(&ring);
             sqeWriteFrame->flags = IOSQE_IO_LINK;
             sqeWriteFrame->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
-            io_uring_prep_write(sqeWriteFrame, ctx->outgoingFd, framehd, sizeof(framehd), SPLICE_F_MORE);
 
+            
+            packData* pck = new packData();
+            pck->fileName = ctx->activeDentry->d_name;
+            if(length < dentry->d_reclen){
+                pck->size = dentry->d_reclen;
+            }else{
+                pck->size = length-64;
+            }
+            wrtCtxRef->packHeader = pck;
+
+            uint8_t* peristHeader = new uint8_t[sizeof(length)];
+            memcpy(peristHeader, &length, sizeof(length));
+            wrtCtxRef->peristHeader = peristHeader;
+
+
+            //should keep theese together in the same op, no need to deal with double
+            msghdr msg = {};
+            iovec httpheader = {const_cast<uint8_t*>(framehd), length};
+            iovec packHeader = {reinterpret_cast<void*>(peristHeader), 64};
+            
+
+            
+            iovec iovArray[2] = {httpheader, packHeader};
+            msg.msg_iov = iovArray;
+            msg.msg_iovlen = 2;
+            
+            io_uring_prep_sendmsg(sqeWriteFrame, ctx->outgoingFd, &msg, SPLICE_F_MORE);
+
+            int openFd = open(dentry->d_name, O_RDONLY);
             //this is payload insert
-            if(dentry->d_reclen >= length-64){
+            if((dentry->d_reclen >= length-64) and (ctx->dentryOffset < dentry->d_reclen)){
                 int* pipeFds = pipeMgr.getPipe();
+                wrtCtxRef->pipes[0] = &pipeFds[0];
+                wrtCtxRef->pipes[1] = &pipeFds[1];
 
                 io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
                 sqePipeRead->flags = IOSQE_IO_LINK;
                 sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
-                io_uring_prep_splice(sqePipeRead, tcpCtxRef->outgoingFd, -1, pipeFds[1], -1, SIXTYFOUR_KB, SPLICE_F_MORE);
-                
+                io_uring_prep_splice(sqePipeRead, openFd, -1, pipeFds[1], ctx->dentryOffset, SIXTYFOUR_KB, SPLICE_F_MORE);
+                ctx->dentryOffset += SIXTYFOUR_KB;
 
                 io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
                 sqePipeWrite->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
                 io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, tcpCtxRef->outgoingFd, -1, SIXTYFOUR_KB, 0);
 
-
+                io_uring_submit(&ring);
             }else{
+                int* pipeFds = pipeMgr.getPipe();
+                wrtCtxRef->pipes[0] = &pipeFds[0];
+                wrtCtxRef->pipes[1] = &pipeFds[1];
+
                 
+                io_uring_sqe* sqePipeRead = io_uring_get_sqe(&ring);
+                sqePipeRead->flags = IOSQE_IO_LINK;
+                sqePipeRead->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
+                io_uring_prep_splice(sqePipeRead, openFd, -1, pipeFds[1], ctx->dentryOffset, SIXTYFOUR_KB, SPLICE_F_MORE);
+                ctx->dentryOffset += SIXTYFOUR_KB;
+
+                io_uring_sqe* sqePipeWrite = io_uring_get_sqe(&ring);
+                sqePipeWrite->user_data = reinterpret_cast<uint64_t>(wrtCtxRef);
+                io_uring_prep_splice(sqePipeWrite, pipeFds[0], 0, tcpCtxRef->outgoingFd, -1, SIXTYFOUR_KB, 0);
+
+                io_uring_submit(&ring);
+            
             }
+
+
 
 
             //DELETE
@@ -286,6 +352,7 @@ int http2PushService::dataWrite(nghttp2_session *session, nghttp2_frame *frame, 
 
     }    
 
+   
 
 
     return 0;
@@ -351,3 +418,35 @@ http2PushService::partialWritesCtx* http2PushService::configurePwrite(basicCtx* 
 //actually sent over the wire but only when the kernel accepted it, so you gotta track whether a " COMPLETION " was AT ALL a completion
 //then you gotta resubmit it, effectivley meaning you need to do your own chaining and context management for the whole entire thing
 //its not implemented in the kernel, it should be, but clearly i cannot achieve such GODLY insight as the person who designed this WONDERFUL system
+void http2PushService::cqeHandler(io_uring_cqe* cqe) {
+    if(cqe->flags > 0){
+        auto* wrtCtx = reinterpret_cast<partialWritesCtx*>(cqe->user_data);
+
+        wrtCtx->mtx->lock();
+        wrtCtx->completionTracker--;
+        if((wrtCtx->completionTracker == 0) and (wrtCtx->writeTarget == cqe->flags)){
+            wrtCtx->mtx->unlock();
+
+            //destructor returns the pipes and removes heap memory 
+            delete wrtCtx;
+        }
+
+        
+        if(wrtCtx->writeTarget >= wrtCtx->completionTracker){
+            //simple resubmit
+            io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+
+        }
+        //the operation has already yielded the submission entry so its fine for me to assign a new one
+        io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+
+
+    }
+}
+
+
+void http2PushService::threePartSubmit(partialWritesCtx* wrtCtx) {
+
+
+
+}

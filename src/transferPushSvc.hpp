@@ -57,14 +57,7 @@ class pipePool{
     }
 };
 
-
-class completionTracker{
-    unsigned int compl
-
-    public:
-}
-
-
+pipePool pipeMgr;
 
 
 class pushService {
@@ -105,7 +98,6 @@ class http2PushService: public pushService {
     static int epfd;
     static epoll_event ev;
 
-    static pipePool pipeMgr;
 
 
 
@@ -133,10 +125,22 @@ class http2PushService: public pushService {
     struct partialWritesCtx{
         std::mutex *mtx;
         unsigned int completionTracker;
+        unsigned int writeTarget = 0u;
+        unsigned int startOffset = 0u;
         int* pipes[2];
         std::string refkey;
+        uint8_t* peristHeader = nullptr;
+        packData* packHeader = nullptr;
         
+
         partialWritesCtx(){completionTracker = 0u; mtx = new std::mutex();}
+        ~partialWritesCtx(){
+            delete mtx;
+            delete peristHeader;
+            delete packHeader;
+
+            pipeMgr.returnPipe(pipes[0]);
+        }
     };
     struct basicCtx{
         DIR *openDir;
@@ -166,6 +170,8 @@ class http2PushService: public pushService {
     static partialWritesCtx *getPwriteCtx(const std::string& uniqFilePull);
 
     static partialWritesCtx* configurePwrite(basicCtx* ctx, size_t& len); 
+    static void threePartSubmit(partialWritesCtx* wrtCtx);
+
     static void cqeHandler(io_uring_cqe* cqe);
 
     public:
