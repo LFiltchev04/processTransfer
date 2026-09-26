@@ -14,9 +14,14 @@ file(CREATE_LINK
     SYMBOLIC
 )
 
-find_package(libnghttp2-dev REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(REQUIRED IMPORTED_TARGET libnghttp2-dev)
+pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2)
+
+add_library(containerdWrapper SHARED IMPORTED)
+set_target_properties(containerdWrapper PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/src/containerdInterface/containerdWrapper.so"
+    IMPORTED_NO_SONAME FALSE
+)
 
 add_executable(migrationDaemon
     main.cpp
@@ -30,7 +35,7 @@ target_compile_options(migrationDaemon PRIVATE -fpermissive)
 
 target_include_directories(migrationDaemon PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/*
     ${CMAKE_CURRENT_BINARY_DIR}/criu-include
     ${CMAKE_CURRENT_SOURCE_DIR}/criu/images
     ${CMAKE_CURRENT_SOURCE_DIR}/criu/lib/c
@@ -38,8 +43,8 @@ target_include_directories(migrationDaemon PRIVATE
 )
 
 target_link_libraries(migrationDaemon PRIVATE
-    PkgConfig::libnghttp2-dev
+    PkgConfig::NGHTTP2
     ${CMAKE_CURRENT_SOURCE_DIR}/criu/lib/c/libcriu.so
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/containerdInterface/containerdWrapper.so
+    containerdWrapper
     protobuf-c
 )

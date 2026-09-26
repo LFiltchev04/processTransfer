@@ -4,8 +4,9 @@
 #include <fcntl.h>
 
 
-//witches over execution context to the targeted cgroup, operates as a normal fork() in regards to returned vals
-int injectCgroup(std::filesystem::path cgroupPath ){
+
+//switches over execution context to the targeted cgroup, operates as a normal fork() in regards to returned vals
+inline int injectCgroup(std::filesystem::path cgroupPath ){
 
     //this needs a rework
     cgroupPath /= "cgroup.procs";

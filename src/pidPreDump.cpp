@@ -1,4 +1,7 @@
 #include "pidPreDump.hpp"
+#include "timestampHeap.hpp"
+
+waiterHeap pidPreDump::timerHeap;
 
 pidPreDump::pidPreDump(int pid, dumpFile location) {
     pidToTrack = pid;

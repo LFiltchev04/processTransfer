@@ -4,6 +4,7 @@
 #include "dumpFile.hpp"
 #include "criuInterface.hpp"
 
+class waiterHeap;
 
 
 class pidPreDump{
