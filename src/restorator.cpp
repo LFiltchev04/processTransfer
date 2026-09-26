@@ -1,5 +1,9 @@
 #include "restorator.hpp"
 
+std::filesystem::path restorator::cgroupBasePath{};
+std::filesystem::path restorator::socketPath{};
+std::string restorator::namespaceName{};
+criuInterface* restorator::criuCommands = nullptr;
 
 
 restorator::restorator(dumpFile* dump){
