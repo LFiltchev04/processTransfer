@@ -148,7 +148,7 @@ class http2PushService: public pushService {
         int outgoingFd;
         unsigned int dentryOffset = 0u;
         partialWritesCtx *wrtCtx = nullptr;
-
+        nghttp2_data_provider src{};
     };
 
     static std::unordered_map<std::string, partialWritesCtx> partialWritesMap;

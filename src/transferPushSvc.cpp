@@ -146,6 +146,7 @@ int http2PushService::onHeaderRecv(nghttp2_session *session, const nghttp2_frame
             //apperently theese need flags set to not dangle after this goes out of scope
             ctx->src.read_callback = http2PushService::dataSrcReadZcp;
 
+            
             nghttp2_submit_request(session, nullptr, pathHeader, 1, &ctx->src, ctx);
             //allowNetworkFlush();
         }
